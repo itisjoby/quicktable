@@ -3,10 +3,11 @@ class quicktable {
   	    this._element = document.querySelector(selector);
         this.db=this.db || null;
         this.request=null;
-        this.db_name='quicktable_'+(Date.now() / 1000 | 0)+'_'+Math.floor(1000 + Math.random() * 9000);;
+        this.db_name='quicktable_'+(Date.now() / 1000 | 0)+'_'+Math.floor(1000 + Math.random() * 9000);
         this.collection='data';
         this.documents=[];
         this.columns=[];
+        this.number_columns=['id'];//for sorting this fields willbe considered as int
         this.results=[];
         this.search_query='';
         this.current_page=1;
@@ -17,9 +18,41 @@ class quicktable {
         this.raw_data=[];
         this.active_sort_column='1';//index of this.columns
         this.sorting_method='next';       //next:asc,prev:desc
+        this.remember_type='';
+        this.use_remember_type='';
     }
     
-    
+    loadDb(){
+        if (!window.indexedDB) {
+            console.log(`Your browser doesn't support IndexedDB`);
+            return;
+        } 
+        let self=this;
+        if (typeof(Storage) !== "undefined" && self.use_remember_type!=='') {
+            let remembered_dbs=[];
+            if(sessionStorage.getItem("quicktable_remembered_dbs")!==null){
+                remembered_dbs=JSON.parse(sessionStorage.getItem("quicktable_remembered_dbs"));
+            }
+            let session=remembered_dbs.map((db)=>{
+                if(db.id==self.use_remember_type){
+                    return db.dbname;
+                }
+                return false;
+            });
+           
+            if(session[0]=="undefined"){
+                self.db_name='quicktable_'+(Date.now() / 1000 | 0)+'_'+Math.floor(1000 + Math.random() * 9000);;
+                self.use_remember_type='';
+                self.initDb();
+            }
+            
+            self.db_name=session[0];
+            self.connect(1);
+            self._element.addEventListener('search_completed', function (elem) {
+                self.buildTable()
+            }, false);
+        }
+    }
     initDb(){
         if (!window.indexedDB) {
             console.log(`Your browser doesn't support IndexedDB`);
@@ -35,6 +68,19 @@ class quicktable {
         let reloaded= window.quicktablereload;//reload will have 
         window.quicktablereload=true;
 
+        let remembered_dbs=[];
+        
+        //keep these dbs
+        if(sessionStorage.getItem("quicktable_remembered_dbs")!==null){
+            remembered_dbs=JSON.parse(sessionStorage.getItem("quicktable_remembered_dbs"));
+            if(remembered_dbs.length>0){
+                remembered_dbs=remembered_dbs.map((db)=>{
+                    return db.dbname;
+                })
+            }
+        }
+        
+
         let available_dbs=[];
         if (typeof(Storage) !== "undefined" && typeof(reloaded)==="undefined") {
             
@@ -47,15 +93,19 @@ class quicktable {
         indexedDB.databases().then(function(response){
            
             response.map((i)=>{
-                if(available_dbs.includes(i.name)){
-                    //delete it
-                    indexedDB.deleteDatabase(i.name);
+                if(remembered_dbs.includes(i.name)){
+                    //keep
                 }else{
-                    let db_info=i.name.split('_');
-                    let db_created_at=db_info[1];
-                    let current_time=(Date.now() / 1000 | 0);
-                    if((current_time-db_created_at)>10800){//3hours
+                    if(available_dbs.includes(i.name)){
+                        //delete it
                         indexedDB.deleteDatabase(i.name);
+                    }else{
+                        let db_info=i.name.split('_');
+                        let db_created_at=db_info[1];
+                        let current_time=(Date.now() / 1000 | 0);
+                        if((current_time-db_created_at)>10800){//3hours
+                            indexedDB.deleteDatabase(i.name);
+                        }
                     }
                 }
             })    
@@ -85,13 +135,32 @@ class quicktable {
                 }
                 available_dbs.push(self.db.name);
                 sessionStorage.setItem("quicktable_available_dbs", JSON.stringify(available_dbs));
+            
+                if(self.remember_type!==''){
+                    let remembered_dbs=[];
+                    if(sessionStorage.getItem("quicktable_remembered_dbs")!==null){
+                        remembered_dbs=JSON.parse(sessionStorage.getItem("quicktable_remembered_dbs"));
+                    }
+                    remembered_dbs=remembered_dbs.filter((db)=>{
+                        if(db.id==self.remember_type){
+                            return false;
+                        }
+                        return true;
+                    })
+                    
+                    remembered_dbs.push({
+                        dbname:self.db.name,
+                        id:self.remember_type
+                    })
+                    sessionStorage.setItem("quicktable_remembered_dbs", JSON.stringify(remembered_dbs));
+                }
             }
 
             self.pipe();
         };
         
         self.request.onupgradeneeded = (event) => {
-         
+         console.log("upgrading")
             self.db = event.target.result;
             self.recreateTable();
         }; 
@@ -109,8 +178,11 @@ class quicktable {
         self._element.addEventListener('cleared', function (elem) {
             self.seed();
         }, false);
-        
-        self.clearData();
+        if(self.use_remember_type==''){
+            self.clearData();
+        }else{
+            self.searchData();
+        }
     }
 
     recreateTable(){
@@ -129,11 +201,29 @@ class quicktable {
             };*/
         }
     }
+    showLoading(){
+        let self=this;
+        let tbody=`<tr>`;
+            let c_i=0;
+            for(let column of self.columns){
+                c_i++;
+                if(c_i==self.columns.length){
+                    tbody+=`<td colspan="${c_i}">Loading...</td>`;
+                }else{
+                    tbody+=`<td style="display:none"></td>`;
+                }
+               
+            }
+            tbody+=`</tr>`; 
+        self._element.querySelector('tbody').innerHTML=tbody;
+    }
     searchData(){
+        
         const txn = this.db.transaction(this.collection, 'readonly');
         const store = txn.objectStore(this.collection);
         var countRequest = store.count();
         let self=this;
+        self.showLoading();
         countRequest.onsuccess = function() {
 
 
@@ -151,6 +241,7 @@ class quicktable {
             getCursorRequest.onsuccess = e => {
                
                 const cursor = e.target.result
+                
                 if (cursor) {
                     let moved_cursor=false;
                     records_looped++;
@@ -283,13 +374,29 @@ class quicktable {
          ----------------------*/
 
         let tbody=``;
-        for(let tr_record of self.results){
-            tbody+=`<tr>`;
-            for(let column of self.columns){
-                tbody+=tr_record[column+'_html_text'];
+        if(self.results.length>0){
+            for(let tr_record of self.results){
+                tbody+=`<tr>`;
+                for(let column of self.columns){
+                    tbody+=tr_record[column+'_html_text'];
+                }
+                tbody+=`</tr>`;
             }
-            tbody+=`</tr>`;
+        }else{
+            tbody+=`<tr>`;
+            let c_i=0;
+            for(let column of self.columns){
+                c_i++;
+                if(c_i==self.columns.length){
+                    tbody+=`<td colspan="${c_i}">No records found...</td>`;
+                }else{
+                    tbody+=`<td style="display:none"></td>`;
+                }
+               
+            }
+            tbody+=`</tr>`; 
         }
+        
         self._element.querySelector('tbody').innerHTML=tbody;   
         /*-----------------------
          * building tbody
@@ -402,10 +509,15 @@ class quicktable {
                 for(let ridx in raw_data){
                     for(let column of this.columns){
                         if(ridx==column){
+                            let sort_value=raw_data[column];
+                            if(this.number_columns.includes(column)){
+                                sort_value=Number(sort_value);
+                            }
+
                             let td_obj={
                                 column:this.columns[td_index],
                                 tr_count:tr_count,
-                                sort_value:raw_data[column],
+                                sort_value:sort_value,
                                 inner_text:raw_data[column],
                                 html_text:`<td>${raw_data[column]}</td>`
                             };
@@ -476,6 +588,7 @@ class quicktable {
             self._element.dispatchEvent(c_event);
         };
     }
+    
 }
 
 function factory(class_, ...arg) {
